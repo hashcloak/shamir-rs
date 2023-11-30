@@ -16,7 +16,7 @@ cargo run <port>
 
 ### Trigger sharing amongst all parties
 
-Trigger each party to send a share to the given other parties (ports). For example, for the party running on port 808: 
+Trigger each party to send a share to the given other parties (ports). For example, for the party running on port 8080: 
 ```
 echo "COMMUNICATE_SHARES 8081 8082" | nc 127.0.0.1 8080
 ```
@@ -25,8 +25,8 @@ This will make party listening on port 8080 send the command "RECEIVE_SHARE x" t
 
 Similarly, trigger 8081 and 8082 to send their shares.
 ```
-echo "RECEIVE_SHARE 8080 8082" | nc 127.0.0.1 8081
-echo "RECEIVE_SHARE 8080 8081" | nc 127.0.0.1 8082
+echo "COMMUNICATE_SHARES 8080 8082" | nc 127.0.0.1 8081
+echo "COMMUNICATE_SHARES 8080 8081" | nc 127.0.0.1 8082
 ```
 
 
