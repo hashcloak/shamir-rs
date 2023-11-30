@@ -1,9 +1,15 @@
+mod shamir_secret_sharing;
+
+use shamir_secret_sharing::{get_shares_secret, generate_secret};
+use shamir_secret_sharing::Fq;
 use std::env;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
-use rand::Rng;
+
+const N: u64 = 3;
+const T: usize = 1;
 
 // Send message to other port on localhost
 async fn send_to_port(port: u16, message: String) {
@@ -13,7 +19,7 @@ async fn send_to_port(port: u16, message: String) {
 }
 
 // Handeling of incoming commands for MPC party
-async fn mpc_party(mut incoming_connection: TcpStream, incoming_port: u16, secret: u64, port: String, shares: Arc<Mutex<Vec<(u16, u64)>>>) {
+async fn mpc_party(mut incoming_connection: TcpStream, incoming_port: u16, secret: Fq, port: String, shares: Arc<Mutex<Vec<(u16, u64)>>>) {
     let mut buf = [0; 1024];
     let n = incoming_connection.read(&mut buf).await.unwrap();
     let msg = String::from_utf8_lossy(&buf[..n]);
@@ -22,11 +28,13 @@ async fn mpc_party(mut incoming_connection: TcpStream, incoming_port: u16, secre
     match command.split_whitespace().collect::<Vec<&str>>().as_slice() {
         // Trigger to communicate shares to other parties
         ["COMMUNICATE_SHARES", target_ports @ ..] => {
-            // TODO do proper share calculation
-            let half = secret / 2;
-            for &target_port in target_ports {
+            // Generate n shares, keep 1 and send n-1 to other parties
+            println!("Secret is {}", secret);
+            let shares = get_shares_secret(secret, N, T);
+            println!("Shares are {:#?}", shares);
+            for (index, &target_port) in target_ports.iter().enumerate() {
                 if let Ok(target_port) = target_port.parse::<u16>() {
-                    send_to_port(target_port, format!("RECEIVE_SHARE {}", half)).await;
+                    send_to_port(target_port, format!("RECEIVE_SHARE {}", shares[index])).await;
                 }
             }
         },
@@ -34,7 +42,7 @@ async fn mpc_party(mut incoming_connection: TcpStream, incoming_port: u16, secre
         ["RECEIVE_SHARE", value] => {
             println!("Received on port {}: SHARE {}", port, value);
             let received_value: u64 = value.parse().unwrap();
-            // let received_sender: String = sender.parse().unwrap();
+            // TODO: incoming port has some sort of mapping (for example expected 8081, 8082 but gives 53249, 53273)
             shares.lock().await.push((incoming_port, received_value));
         },
         // Print the shares this server holds - For testing purposes
@@ -52,9 +60,8 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let port = args.get(1).expect("Port number is required").clone();
 
-    // Generate a random secret
-    let mut rng = rand::thread_rng();
-    let secret: u64 = rng.gen();
+    // Obtain a random secret
+    let secret = generate_secret();
 
     // This is where received shares from other parties are stored
     let shares = Arc::new(Mutex::new(Vec::<(u16, u64)>::new()));
