@@ -18,8 +18,25 @@ async fn send_to_port(port: u16, message: String) {
     }
 }
 
+fn get_shares_for_parties(
+  secret: Fq,
+  current_id: u64, 
+  other_parties: [u64;2]) -> Vec<(Fq,Fq)> {
+    let mut inputs = Vec::new();
+    inputs.push(current_id);
+    inputs.push(other_parties[0]);
+    inputs.push(other_parties[1]);
+    get_shares_secret(secret, inputs, T)
+}
+
 // Handeling of incoming commands for MPC party
-async fn mpc_party(mut incoming_connection: TcpStream, incoming_port: u16, secret: Fq, port: String, shares: Arc<Mutex<Vec<(u16, u64)>>>) {
+async fn mpc_party(
+  mut incoming_connection: TcpStream, 
+  secret: Fq, 
+  current_id: u64, 
+  other_parties: [u64;2],
+  shares_storage: Arc<Mutex<Vec<(u64, Fq, Fq)>>>
+) {
     let mut buf = [0; 1024];
     let n = incoming_connection.read(&mut buf).await.unwrap();
     let msg = String::from_utf8_lossy(&buf[..n]);
@@ -30,25 +47,35 @@ async fn mpc_party(mut incoming_connection: TcpStream, incoming_port: u16, secre
         ["COMMUNICATE_SHARES", target_ports @ ..] => {
             // Generate n shares, keep 1 and send n-1 to other parties
             println!("Secret is {}", secret);
-            let shares = get_shares_secret(secret, N, T);
+            let mut shares = get_shares_for_parties(secret, current_id, other_parties);
+            
             println!("Shares are {:#?}", shares);
+            // Send shares to other ports
             for (index, &target_port) in target_ports.iter().enumerate() {
                 if let Ok(target_port) = target_port.parse::<u16>() {
-                    send_to_port(target_port, format!("RECEIVE_SHARE {}", shares[index])).await;
+                  // TODO get the right share for the right port.
+                    let share = shares.remove(index);
+                    println!("sending RECEIVE_SHARE {} {}", share.0, share.1);
+                    send_to_port(target_port, format!("RECEIVE_SHARE {} {} {}", current_id, share.0, share.1)).await;
                 }
             }
+            // Store own share, which is the last share that's left over
+            let own_share = shares.remove(0);
+            // Wrong port id, but we're going to substitute this all for id's anyway
+            shares_storage.lock().await.push((current_id, own_share.0, own_share.1));
         },
         // Handle an incoming share of another party
-        ["RECEIVE_SHARE", value] => {
-            println!("Received on port {}: SHARE {}", port, value);
-            let received_value: u64 = value.parse().unwrap();
-            // TODO: incoming port has some sort of mapping (for example expected 8081, 8082 but gives 53249, 53273)
-            shares.lock().await.push((incoming_port, received_value));
+        ["RECEIVE_SHARE", id_party, x, y] => {
+            println!("Received at party {} from party {}: SHARE {} {}", current_id.to_string(), id_party, x, y);
+            let received_id_party: u64 = id_party.parse().unwrap();
+            let received_x: Fq = x.parse().unwrap();
+            let received_y: Fq = y.parse().unwrap();
+            shares_storage.lock().await.push((received_id_party, received_x, received_y));
         },
         // Print the shares this server holds - For testing purposes
         ["SHOW_SHARES"] => {
-            let shares_lock = shares.lock().await;
-            println!("Shares on port {}: {:?}", port, *shares_lock);
+            let shares_lock = shares_storage.lock().await;
+            println!("Shares of party {}: {:?}", current_id.to_string(), *shares_lock);
         },
         _ => println!(""),
     }
@@ -73,32 +100,61 @@ async fn connect_to_ports(targets: Vec<String>) {
     }
   }
 }
+
+fn parse_party(party_str: &str) -> (u64, u16) {
+  let parts: Vec<&str> = party_str.split(':').collect();
+  if parts.len() != 2 {
+      eprintln!("Invalid party format. Expected format: id:port");
+      std::process::exit(1);
+  }
+  let id = parts[0].parse::<u64>().expect("Invalid id");
+  let port = parts[1].parse::<u16>().expect("Invalid port number");
+  (id, port)
+}
+
 #[tokio::main]
 async fn main() {
     // Get portnumber from commandline
     let args: Vec<String> = env::args().collect();
-    let port = args.get(1).expect("Port number is required").clone();
-    
-    let port1 = args.get(2).expect("Second port number is required").clone();
-    let port2 = args.get(3).expect("Third port number is required").clone();
+    // Input: current_id "id1:port1" "id2:port2" "id3:port3"
+    if args.len() != 5 {
+        eprintln!("Usage: program current_id \"party1_id:party1_port\" \"party2_id:party2_port\" \"party3_id:party3_port\"");
+        std::process::exit(1);
+    }
+
+    let current_id = &args[1].parse::<u64>().expect("Invalid current id");
+    let party1 = parse_party(&args[2]);
+    let party2 = parse_party(&args[3]);
+    let party3 = parse_party(&args[4]);
+    let parties = vec![party1, party2, party3];
+    let port = parties.iter()
+        .find(|(id, _)| id == current_id)
+        .map(|(_, port)| *port)
+        .expect("Current ID does not match any party");
+    let other_parties: Vec<(u64, u16)> = parties.into_iter()
+        .filter(|(id, _)| id != current_id)
+        .collect();
 
     // Obtain a random secret
     let secret = generate_secret();
 
     // This is where received shares from other parties are stored
-    let shares = Arc::new(Mutex::new(Vec::<(u16, u64)>::new()));
-
+    let shares = Arc::new(Mutex::new(Vec::<(u64, Fq, Fq)>::new()));
+    
     // Start listening for incoming connection requests on localhost with given port
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await.unwrap();
     println!("Server running on port {}", port);
 
+    let other_port_1 = other_parties[0];
+    let other_port_2 = other_parties[1];
+    let current_party_id = (*current_id).clone();
     loop {
-        time::sleep(Duration::from_secs(3)).await; // To let things calm down a bit, have a wait
-        let port1_clone = port1.clone();
-        let port2_clone = port2.clone();
-        tokio::spawn(async move {
-            connect_to_ports(vec![port1_clone, port2_clone]).await;
-        });
+        // time::sleep(Duration::from_secs(3)).await; // To let things calm down a bit, have a wait
+        // let port1 = other_port_1.1.to_string();
+        // let port2 = other_port_2.1.to_string();
+        // tokio::spawn(async move {
+        //     connect_to_ports(vec![port1, port2]).await;
+        // });
         
         // Waits for incoming connection attempt, stores established connection to the client
         let (incoming_connection, incoming_address) = listener.accept().await.unwrap();
@@ -107,11 +163,15 @@ async fn main() {
         let incoming_port = incoming_address.port();
         println!("Client port: {}", incoming_port);
 
-        let port_clone = port.clone();
         let shares_clone = shares.clone();
         // Create and start new async task, which is the MPC party
         tokio::spawn(async move {
-            mpc_party(incoming_connection, incoming_port, secret, port_clone, shares_clone).await;
+            mpc_party(
+              incoming_connection, 
+              secret, 
+              current_party_id,
+              [other_port_1.0, other_port_2.0],
+              shares_clone).await;
         });
     }
 }

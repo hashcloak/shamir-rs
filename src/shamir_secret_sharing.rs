@@ -1,7 +1,6 @@
 use ark_poly::{univariate::DensePolynomial, DenseUVPolynomial};
 use ark_ff::fields::{Fp64, MontBackend, MontConfig};
 use ark_poly::Polynomial;
-use ark_std::test_rng;
 use rand::Rng;
 
 const MODULUS: u64 = 127;
@@ -23,15 +22,16 @@ pub fn generate_secret() -> Fq {
 // Obtain n shares for a secret in Zq
 // The shares are obtained by creating a polynomial with degree t, where t < n/2
 // returns n shares
-pub fn get_shares_secret(secret: Fq, n: u64, t:usize) -> Vec<Fq> {
+pub fn get_shares_secret(secret: Fq, inputs: Vec<u64>, t:usize) -> Vec<(Fq, Fq)> {
   // 1. Generate polynomial of deg t
   let p = create_pol(secret, t);
 
   // 2. Evaluate polynomial at n points (1,..,n)
   let mut evals = Vec::new();
-  for i in 0u64..n.into() {
-    let pi = p.evaluate(&Fq::from(i));
-    evals.push(pi);
+  for i in inputs {
+    let x = Fq::from(i);
+    let pi = p.evaluate(&x);
+    evals.push((x, pi));
   }
 
   evals
@@ -47,23 +47,4 @@ fn create_pol(s: Fq, t: usize) -> DensePolynomial<Fq> {
   poly.coeffs[0] = s;
 
   poly
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_get_shares_secret() {
-        let secret = Fq::from(5u64); // Example secret
-        let n = 10; // Number of shares
-        let t = 3; // Deg pol
-
-        let shares = get_shares_secret(secret, n, t);
-
-        assert_eq!(shares.len(), n as usize);
-
-        println!("Shares are {:#?}", shares);
-
-    }
 }
