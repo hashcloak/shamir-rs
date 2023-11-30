@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
-
+use tokio::time::{self, Duration};
 const N: u64 = 3;
 const T: usize = 1;
 
@@ -50,15 +50,37 @@ async fn mpc_party(mut incoming_connection: TcpStream, incoming_port: u16, secre
             let shares_lock = shares.lock().await;
             println!("Shares on port {}: {:?}", port, *shares_lock);
         },
-        _ => println!("Invalid command"),
+        _ => println!(""),
     }
 }
 
+// Async function to repeatedly try connecting to port 8081
+async fn connect_to_ports(targets: Vec<String>) {
+  for target_port in targets {
+    loop {
+      match TcpStream::connect(format!("127.0.0.1:{}", target_port)).await {
+          Ok(stream) => {
+              // println!("Successfully connected to port {}", target_port);
+              // todo
+          }
+          Err(e) => {
+              // eprintln!("Failed to connect to port {}: {}", target_port, e);
+              time::sleep(Duration::from_secs(3)).await;
+
+          }
+      }
+      time::sleep(Duration::from_secs(1)).await; // Wait before retrying
+    }
+  }
+}
 #[tokio::main]
 async fn main() {
     // Get portnumber from commandline
     let args: Vec<String> = env::args().collect();
     let port = args.get(1).expect("Port number is required").clone();
+    
+    let port1 = args.get(2).expect("Second port number is required").clone();
+    let port2 = args.get(3).expect("Third port number is required").clone();
 
     // Obtain a random secret
     let secret = generate_secret();
@@ -71,6 +93,13 @@ async fn main() {
     println!("Server running on port {}", port);
 
     loop {
+        time::sleep(Duration::from_secs(3)).await; // To let things calm down a bit, have a wait
+        let port1_clone = port1.clone();
+        let port2_clone = port2.clone();
+        tokio::spawn(async move {
+            connect_to_ports(vec![port1_clone, port2_clone]).await;
+        });
+        
         // Waits for incoming connection attempt, stores established connection to the client
         let (incoming_connection, incoming_address) = listener.accept().await.unwrap();
         // Retrieve the incoming port
