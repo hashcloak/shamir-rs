@@ -11,8 +11,13 @@ In this example we'll spin up 3 parties.
 Run 3 parties on ports 8080, 8081 and 8082 by running respectively:
 
 ```
-cargo run <port>
+cargo run 1 "1:8080" "2:8081" "3:8082"
+
+cargo run 2 "1:8080" "2:8081" "3:8082"
+
+cargo run 3 "1:8080" "2:8081" "3:8082"
 ```
+
 
 ### Trigger sharing amongst all parties
 
