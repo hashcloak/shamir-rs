@@ -2,12 +2,14 @@ mod shamir_secret_sharing;
 
 use shamir_secret_sharing::{get_shares_secret, generate_secret};
 use shamir_secret_sharing::Fq;
+use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tokio::time::{self, Duration};
+
 const N: u64 = 3;
 const T: usize = 1;
 
@@ -82,22 +84,25 @@ async fn mpc_party(
 }
 
 // Async function to repeatedly try connecting to port 8081
-async fn connect_to_ports(targets: Vec<String>) {
+async fn connect_to_ports(targets: Vec<String>, local_port: String, connections: Arc<Mutex<HashMap<String, TcpStream>>>) {
   for target_port in targets {
-    loop {
-      match TcpStream::connect(format!("127.0.0.1:{}", target_port)).await {
-          Ok(stream) => {
-              // println!("Successfully connected to port {}", target_port);
-              // todo
+      loop {
+          match TcpStream::connect(format!("127.0.0.1:{}", target_port)).await {
+              Ok(mut stream) => {
+                  stream
+                      .write(format!("HELLO {}", local_port).as_bytes())
+                      .await
+                      .unwrap();
+                  connections.lock().await.insert(target_port, stream);
+                  break;
+              }
+              Err(e) => {
+                  // eprintln!("Failed to connect to port {}: {}", target_port, e);
+                  time::sleep(Duration::from_secs(3)).await;
+              }
           }
-          Err(e) => {
-              // eprintln!("Failed to connect to port {}: {}", target_port, e);
-              time::sleep(Duration::from_secs(3)).await;
-
-          }
+          time::sleep(Duration::from_secs(1)).await; // Wait before retrying
       }
-      time::sleep(Duration::from_secs(1)).await; // Wait before retrying
-    }
   }
 }
 
@@ -114,7 +119,7 @@ fn parse_party(party_str: &str) -> (u64, u16) {
 
 #[tokio::main]
 async fn main() {
-    // Get portnumber from commandline
+
     let args: Vec<String> = env::args().collect();
     // Input: current_id "id1:port1" "id2:port2" "id3:port3"
     if args.len() != 5 {
@@ -122,6 +127,7 @@ async fn main() {
         std::process::exit(1);
     }
 
+    // Parse all the arguments
     let current_id = &args[1].parse::<u64>().expect("Invalid current id");
     let party1 = parse_party(&args[2]);
     let party2 = parse_party(&args[3]);
@@ -148,20 +154,22 @@ async fn main() {
     let other_port_1 = other_parties[0];
     let other_port_2 = other_parties[1];
     let current_party_id = (*current_id).clone();
+
+    // Tries to connect to the other clients
+    let connections = Arc::new(Mutex::new(HashMap::new()));
+    let connections_clone = Arc::clone(&connections);
+    tokio::spawn(connect_to_ports(
+        vec![other_port_1.1.to_string(), other_port_2.1.to_string()],
+        port.clone().to_string(),
+        connections_clone,
+    )).await.unwrap();
+
+    // Print the connections after connecting with parties
+    println!("Established connections: {:?}", connections);
+    
     loop {
-        // time::sleep(Duration::from_secs(3)).await; // To let things calm down a bit, have a wait
-        // let port1 = other_port_1.1.to_string();
-        // let port2 = other_port_2.1.to_string();
-        // tokio::spawn(async move {
-        //     connect_to_ports(vec![port1, port2]).await;
-        // });
-        
         // Waits for incoming connection attempt, stores established connection to the client
-        let (incoming_connection, incoming_address) = listener.accept().await.unwrap();
-        // Retrieve the incoming port
-        // TODO this gives values like 59671, 59675 instead of 8081 and 8082
-        let incoming_port = incoming_address.port();
-        println!("Client port: {}", incoming_port);
+        let (incoming_connection, _) = listener.accept().await.unwrap();
 
         let shares_clone = shares.clone();
         // Create and start new async task, which is the MPC party
