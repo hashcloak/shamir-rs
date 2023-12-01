@@ -1,11 +1,12 @@
 # Rust Shamir Secret Sharing Server
 
-Current functionality:
-- (WIP) Shamir Secret Sharing
+In the Hachathon Q3 at HashCloak, and for learning purposes, we decided to explore the networking process behind MPC protocols. To achieve this goal, we implemented some functionalities of Shamir secret-sharing, including some networking aspects using TCP sockets. Those functionalities are sharing distribution, secure addition of secrets, and the reconstruction of secrets given a set of shares. In this implementation, we are considering multiple parties, concretely, the examples shown below are executed using three parties. At the moment, the input of the parties is generated at random instead of being provided by the parties itself. Also, the actions of the parties are triggered by an external user by sending a message to the listening port of the corresponding party to perform certain action.
+
+Although this is not a production quality source code, we managed to understand basic concepts of the `tokio` library, and some of the underlying details and difficulties that come with implementing a distributed network.
 
 ## Build and run
 
-In this example we'll spin up 3 parties. 
+In this example we'll spin up 3 parties and show how to perform share distribution, the protocol for addition, and the protocol for reconstructing a secret.
 
 ### Create parties
 Run 3 parties on ports 8080, 8081 and 8082 by running in 3 terminals respectively:
@@ -22,6 +23,7 @@ cargo run 3 "1:8080" "2:8081" "3:8082"
 ### Trigger sharing amongst all parties
 
 Trigger each party to send a share to the given other parties (ports). For example, for the party running on port 8080: 
+
 ```
 echo "COMMUNICATE_SHARES" | nc 127.0.0.1 8080
 ```
