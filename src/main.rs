@@ -1,6 +1,6 @@
 mod shamir_secret_sharing;
 
-use shamir_secret_sharing::{get_shares_secret, generate_secret};
+use shamir_secret_sharing::{get_shares_secret, generate_secret, interpolate};
 use shamir_secret_sharing::Fq;
 use std::collections::HashMap;
 use std::env;
@@ -23,7 +23,7 @@ async fn send_to_port(port: u16, message: String) {
 fn get_shares_for_parties(
   secret: Fq,
   current_id: u64, 
-  other_parties: [u64;2]) -> Vec<(Fq,Fq)> {
+  other_parties: Vec<u64>) -> Vec<(Fq,Fq)> {
     let mut inputs = Vec::new();
     inputs.push(current_id);
     inputs.push(other_parties[0]);
@@ -36,8 +36,9 @@ async fn mpc_party(
   mut incoming_connection: TcpStream, 
   secret: Fq, 
   current_id: u64, 
-  other_parties: [u64;2],
-  shares_storage: Arc<Mutex<Vec<(u64, Fq, Fq)>>>
+  other_parties: [(u64, u16);2],
+  shares_storage: Arc<Mutex<Vec<(u64, Fq, Fq)>>>,
+  sum_storage: Arc<Mutex<Vec<(u64, Fq)>>>
 ) {
     let mut buf = [0; 1024];
     let n = incoming_connection.read(&mut buf).await.unwrap();
@@ -46,24 +47,21 @@ async fn mpc_party(
 
     match command.split_whitespace().collect::<Vec<&str>>().as_slice() {
         // Trigger to communicate shares to other parties
-        ["COMMUNICATE_SHARES", target_ports @ ..] => {
+        ["COMMUNICATE_SHARES"] => {
             // Generate n shares, keep 1 and send n-1 to other parties
             println!("Secret is {}", secret);
-            let mut shares = get_shares_for_parties(secret, current_id, other_parties);
+            let other_parties_ids: Vec<u64> = other_parties.iter().map(|(id,_)| *id).collect();
+            let shares = get_shares_for_parties(secret, current_id, other_parties_ids);
             
             println!("Shares are {:#?}", shares);
             // Send shares to other ports
-            for (index, &target_port) in target_ports.iter().enumerate() {
-                if let Ok(target_port) = target_port.parse::<u16>() {
-                  // TODO get the right share for the right port.
-                    let share = shares.remove(index);
-                    println!("sending RECEIVE_SHARE {} {}", share.0, share.1);
-                    send_to_port(target_port, format!("RECEIVE_SHARE {} {} {}", current_id, share.0, share.1)).await;
-                }
+            for party in other_parties {
+                let share: (Fq, Fq) = *shares.iter().find(|(x,_)| *x == Fq::from(party.0)).unwrap();
+                println!("sending RECEIVE_SHARE {} {}", share.0, share.1);
+                send_to_port(party.1, format!("RECEIVE_SHARE {} {} {}", current_id, share.0, share.1)).await;
             }
-            // Store own share, which is the last share that's left over
-            let own_share = shares.remove(0);
-            // Wrong port id, but we're going to substitute this all for id's anyway
+            // Store own share
+            let own_share: (Fq, Fq) = *shares.iter().find(|(x,_)| *x == Fq::from(current_id)).unwrap();
             shares_storage.lock().await.push((current_id, own_share.0, own_share.1));
         },
         // Handle an incoming share of another party
@@ -79,6 +77,35 @@ async fn mpc_party(
             let shares_lock = shares_storage.lock().await;
             println!("Shares of party {}: {:?}", current_id.to_string(), *shares_lock);
         },
+        ["SUM_AND_DISTRIBUTE"] => { // Party has to sum their shares and send the result to the other parties
+          // Calculate sum
+          let sum: Fq = shares_storage.lock().await.iter().map(|s| s.2).sum();
+          println!("Sum of party {}: {:?}", current_id.to_string(), sum);
+          // Send to other parties
+          for party in other_parties {
+            send_to_port(party.1, format!("RECEIVE_SUM {} {}", current_id, sum)).await;
+          }
+          // Store own sum as well
+          sum_storage.lock().await.push((current_id, sum));
+        },
+        // Handle an incoming sum of another party
+        ["RECEIVE_SUM", id_party, sum] => {
+          println!("Received at party {} from party {}: SUM {}", current_id.to_string(), id_party, sum);
+          let received_id_party: u64 = id_party.parse().unwrap();
+          let received_sum: Fq = sum.parse().unwrap();
+          sum_storage.lock().await.push((received_id_party, received_sum));
+        },
+        // Let party calculate and print result
+        ["GIVE_RESULT"] => {
+          let sums_lock = sum_storage.lock().await;
+          let coeff: Vec<(Fq, Fq)> = 
+            sums_lock.iter()
+            .map(|(x, y)| (Fq::from(*x as u64), *y))
+            .collect();
+
+          let res = interpolate(coeff);
+          println!("Calculated result at party {}: {}", current_id.to_string(), res);
+      },
         _ => println!(""),
     }
 }
@@ -146,6 +173,7 @@ async fn main() {
 
     // This is where received shares from other parties are stored
     let shares = Arc::new(Mutex::new(Vec::<(u64, Fq, Fq)>::new()));
+    let sums = Arc::new(Mutex::new(Vec::<(u64, Fq)>::new()));
     
     // Start listening for incoming connection requests on localhost with given port
     let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).await.unwrap();
@@ -172,14 +200,16 @@ async fn main() {
         let (incoming_connection, _) = listener.accept().await.unwrap();
 
         let shares_clone = shares.clone();
+        let sums_clone = sums.clone();
         // Create and start new async task, which is the MPC party
         tokio::spawn(async move {
             mpc_party(
               incoming_connection, 
               secret, 
               current_party_id,
-              [other_port_1.0, other_port_2.0],
-              shares_clone).await;
+              [(other_port_1.0, other_port_1.1), (other_port_2.0, other_port_2.1)],
+              shares_clone,
+              sums_clone).await;
         });
     }
 }
